@@ -3,17 +3,21 @@ use super::{errors::AudioError, stream::Stream};
 use crate::codecs::flac::flac::FLAC;
 use std::{io::Read, str};
 
+// Define PCM structure holding audio data
 pub struct PCM {
-    // This should be your PCM data structure, Vec<u8> is a placeholder here
-    data: Vec<u8>,
+    // This should be the PCM data structure, Vec<u8> is a placeholder here
+    data: Vec<u32>,
 }
 
 impl PCM {
+    /**
+     * Costructor method to create a PCM from a Stream
+     * It determines the file type and dispatches to the appropriate decoder
+     * Returns a Result that may contain a PCM or an AudioError
+     */
     pub fn from_stream(stream: &mut Stream) -> Result<Self, AudioError> {
-        println!("Starting from_stream method...");
-
-        // determine the file type
-        let mut buffer = [0; 4]; // find the magic bytes
+        // Determine the file type
+        let mut buffer = [0; 4]; // Find the magic bytes
         stream.reader().read_exact(&mut buffer)?;
 
         let data = match str::from_utf8(&buffer) {
@@ -43,8 +47,17 @@ impl PCM {
         Ok(Self { data })
     }
 
+    /**
+     *  Method to play the PCM data
+     *  Returns a Result that may contaion () or an AudioError
+     */
     pub fn play(&self) -> Result<(), AudioError> {
-        // send PCM data to the audio hardware
-        unimplemented!()
+        // Send PCM data to the audio hardware
+        // test for now
+        for sample in self.data.iter().take(10) {
+            println!("{:?}", sample)
+        }
+
+        Ok(())
     }
 }

@@ -1,9 +1,13 @@
 // src/codecs/flac/data.rs
+
+// This module handles parsing FLAC metadata from the input stream.
+
 use super::block::{read_next_block, Block, BlockType};
 use crate::common::{errors::AudioError, stream::Stream};
 use byteorder::{BigEndian, ReadBytesExt};
-use std::io::{Seek, SeekFrom};
+use std::sync::Arc;
 
+// Struct to hold parsed metadata of FLAC file
 pub struct Metadata {
     min_block_size: Option<u16>,
     max_block_size: Option<u16>,
@@ -13,13 +17,13 @@ pub struct Metadata {
     num_channels: Option<u8>,
     bit_depth: Option<u8>,
     total_samples: Option<u64>,
-    md5_signature: Option<Vec<u8>>,
-    // other fields
+    md5_signature: Option<Arc<Vec<u8>>>, // Arc is used for efficient shared ownership
 }
 
 impl Metadata {
+    // Constructor that reads and parses metadata from a given Stream
     pub fn new(stream: &mut Stream) -> Result<Self, AudioError> {
-        // init Metadata with None values
+        // Initialization of Metadata with None values
         let mut metadata = Metadata {
             min_block_size: None,
             max_block_size: None,
@@ -32,16 +36,20 @@ impl Metadata {
             md5_signature: None,
         };
 
-        while let Some(block) = read_next_block(stream)? {
+        // Specify which block types to read
+        let read_types = &[BlockType::StreamInfo, BlockType::VorbisComment];
+
+        // Loop to read blocks of the specified types
+        while let Some(block) = read_next_block(stream, read_types)? {
+            // Use block type to determine how to parse it
             match block.get_type() {
                 BlockType::StreamInfo => metadata.parse_stream_info(block)?,
                 BlockType::VorbisComment => metadata.parse_vorbis_comment(block)?,
+                // Should not reach here as we only read the specified block types
                 _ => {
-                    // skip the current block if its not needed
-                    stream
-                        .reader()
-                        .seek(SeekFrom::Current(block.get_length() as i64))?;
-                    continue;
+                    return Err(AudioError::ParseError(
+                        "Unexpected block type encountered".into(),
+                    ))
                 }
             }
         }
@@ -49,27 +57,51 @@ impl Metadata {
         Ok(metadata)
     }
 
-    // parse STREAMINFO and poplate corresponding fields
+    // Parse STREAMINFO block and poplate corresponding fields in Metadata
     fn parse_stream_info(&mut self, block: Block) -> Result<(), AudioError> {
         let data = block.get_data();
 
-        // parse binary data according to flac specs
+        // Check if the block has enough data to parse STREAMINFO block
+        if data.len() < 34 {
+            return Err(AudioError::ParseError(
+                "Not enough data to parse STREAMINFO block".into(),
+            ));
+        }
+
+        // Parse binary data according to flac specs
         let min_block_size = Some((&data[0..2]).read_u16::<BigEndian>()?);
         let max_block_size = Some((&data[2..4]).read_u16::<BigEndian>()?);
         let min_frame_size = Some((&data[4..7]).read_u24::<BigEndian>()?);
         let max_frame_size = Some((&data[7..10]).read_u24::<BigEndian>()?);
 
+        /*
+         * The sample rate (in Hz) is a 20-but integer
+         * It's stored in the upper 20 bits of a 32-bit block
+         */
         let sample_rate_raw = (&data[10..14]).read_u32::<BigEndian>()?;
         let sample_rate = Some(sample_rate_raw >> 12);
 
+        /*
+         * The number of channels is a 3-bit number
+         * It's stored in the 2nd, 3rd, and 4th bits of the 13th byte
+         */
         let num_channels = Some((((data[12] & 0x0E) >> 1) + 1) as u8);
+
+        /*
+         * The bit deptth per sample is a 5-bit number
+         * It's stored in the last bit of the 13th byte and the first 4 bits of the 14th byte
+         */
         let bit_depth = Some((((data[12] & 0x01) << 4) | (data[13] >> 4) + 1) as u8);
 
+        /*
+         * The total number of samples is a 36-bit number
+         * It's stored in the last 4 bites of the 14th byte and the 15th to 18th bytes
+         */
         let total_samples = Some(
             ((data[13] as u64 & 0x0F) << 32) | ((&data[14..18]).read_u32::<BigEndian>()? as u64),
         );
 
-        let md5_signature = Some(data[18..34].to_vec());
+        let md5_signature = Some(Arc::new(data[18..34].to_vec()));
 
         // Assign extracted values to Metadata fields
         self.min_block_size = min_block_size;
@@ -85,7 +117,7 @@ impl Metadata {
         Ok(())
     }
 
-    // parse VORBIS_COMMENT and poplate corresponding fields
+    // Parse VORBIS_COMMENT block and poplate corresponding fields in Metadata
     fn parse_vorbis_comment(&mut self, block: Block) -> Result<(), AudioError> {
         let _data = block.get_data();
 
@@ -126,10 +158,14 @@ impl Metadata {
         self.total_samples
     }
 
-    pub fn get_md5_signature(&self) -> Option<Vec<u8>> {
+    pub fn get_md5_signature(&self) -> Option<Arc<Vec<u8>>> {
         self.md5_signature.clone()
     }
 
+    /**
+     * These two methods return a ShortFormat of LongFormat struct, which
+     * are simplified version of the Metadata for use in other parts of the code
+     */
     pub fn get_short_format(&self) -> ShortFormat {
         ShortFormat {
             sample_rate: self.get_sample_rate(),
@@ -170,5 +206,5 @@ pub struct LongFormat {
     pub num_channels: Option<u8>,
     pub bit_depth: Option<u8>,
     pub total_samples: Option<u64>,
-    pub md5_signature: Option<Vec<u8>>,
+    pub md5_signature: Option<Arc<Vec<u8>>>,
 }
